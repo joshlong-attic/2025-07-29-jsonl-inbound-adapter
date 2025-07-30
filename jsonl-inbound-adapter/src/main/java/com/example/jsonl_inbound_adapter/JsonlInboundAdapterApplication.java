@@ -13,15 +13,17 @@ import org.springframework.core.io.Resource;
 import org.springframework.integration.core.GenericHandler;
 import org.springframework.integration.dsl.IntegrationFlow;
 import org.springframework.integration.endpoint.AbstractMessageSource;
+import org.springframework.integration.file.dsl.Files;
+import org.springframework.integration.json.JsonToObjectTransformer;
 import org.springframework.integration.metadata.MetadataStore;
 import org.springframework.integration.metadata.PropertiesPersistingMetadataStore;
 import org.springframework.integration.metadata.SimpleMetadataStore;
 import org.springframework.util.Assert;
+import org.springframework.util.FileCopyUtils;
 
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.FileWriter;
 import java.io.RandomAccessFile;
+import java.nio.charset.Charset;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -39,6 +41,8 @@ public class JsonlInboundAdapterApplication {
 @Configuration
 class JsonIntegrationFlow {
 
+    private final Logger log = LoggerFactory.getLogger(getClass());
+
     @Bean
     PropertiesPersistingMetadataStore metadataStore(@Value("file://${HOME}/Desktop/metadata") Resource baseDir)
             throws Exception {
@@ -52,10 +56,33 @@ class JsonIntegrationFlow {
         return props;
     }
 
-    @Bean
-    IntegrationFlow jsonInboundIntegrationFlow(MetadataStore metadataStore, ObjectMapper objectMapper,
-                                               @Value("classpath:/seinfeld.jsonl") Resource jsonlFile) {
-        var log = LoggerFactory.getLogger(getClass());
+//    @Bean
+    IntegrationFlow tailIntegrationFlow(
+            @Value("classpath:/seinfeld.jsonl") Resource jsonInput,
+            @Value("file://${HOME}/Desktop/seinfeld.json") Resource output
+    ) throws Exception {
+
+        try (var fw = new FileWriter(output.getFile())) {
+            var sampleJsonForDemo = jsonInput.getContentAsString(Charset.defaultCharset());
+            FileCopyUtils.copy(sampleJsonForDemo, fw);
+        }
+        return IntegrationFlow.from(
+                        Files.tailAdapter(output.getFile())
+                                .autoStartup(true)
+                                .end(false)
+                )
+                .transform(new JsonToObjectTransformer(JsonNode.class))
+                .handle((payload, headers) -> {
+                    log.debug("got a new line {} with type {}", payload, payload.getClass().getName());
+                    return null;
+                })
+                .get();
+    }
+
+
+//    @Bean
+    IntegrationFlow statefulJsonlIntegrationFlow(MetadataStore metadataStore, ObjectMapper objectMapper,
+                                                 @Value("classpath:/seinfeld.jsonl") Resource jsonlFile) {
         Assert.state(jsonlFile.exists(), "the jsonl file must exist");
         var jsonl = new JsonInboundMessageProducer(objectMapper, metadataStore, jsonlFile);
         return IntegrationFlow
@@ -99,16 +126,16 @@ class JsonInboundMessageProducer extends AbstractMessageSource<JsonNode> {
         try (var randomAccessFile = new RandomAccessFile(this.jsonlFile.getFile(), "r");) {
             if (offsetLine > 0) {
                 var currentLine = 0;
-                do  {
+                do {
                     randomAccessFile.readLine();
-                    currentLine+=1;
+                    currentLine += 1;
                 } //
                 while (currentLine < offsetLine);
 
-                log.debug( "starting at offset {}, {}, {}", offsetLine , randomAccessFile.getFilePointer(), randomAccessFile.length());
+                log.debug("starting at offset {}, {}, {}", offsetLine, randomAccessFile.getFilePointer(), randomAccessFile.length());
             }
             while (randomAccessFile.getFilePointer() < randomAccessFile.length()) {
-                var next = randomAccessFile.readLine() ;
+                var next = randomAccessFile.readLine();
                 if (next != null) {
                     var node = this.objectMapper.readTree(next);
                     this.queue.add(node);
